@@ -1,0 +1,69 @@
+﻿import express from "express";
+import fetch from "node-fetch";
+import cors from "cors";
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const API_KEY = process.env.API_FOOTBALL_KEY;
+const BASE_URL = "https://v3.football.api-sports.io";
+
+const TOP_LEAGUES = [
+  "Premier League",
+  "La Liga",
+  "Serie A",
+  "Bundesliga",
+  "Ligue 1"
+];
+
+app.post("/api/generate-signals", async (req, res) => {
+  try {
+    const fixturesRes = await fetch(`${BASE_URL}/fixtures?next=30`, {
+      headers: { "x-apisports-key": API_KEY }
+    });
+
+    const data = await fixturesRes.json();
+    const signals = [];
+
+    for (const f of data.response) {
+      if (!TOP_LEAGUES.includes(f.league.name)) continue;
+
+      const homeElo = f.teams.home.rating || 1500;
+      const awayElo = f.teams.away.rating || 1500;
+
+      const eloDiff = homeElo - awayElo;
+      const modelProb = 0.50 + (eloDiff / 1000);
+
+      if (modelProb < 0.55) continue;
+
+      const odds = f.bookmakers?.[0]?.bets?.[0]?.values?.[0]?.odd;
+      if (!odds || odds < 1.5 || odds > 3.2) continue;
+
+      const impliedProb = 1 / odds;
+      const edge = modelProb - impliedProb;
+
+      if (edge < 0.06) continue;
+
+      signals.push({
+        match: `${f.teams.home.name} vs ${f.teams.away.name}`,
+        league: f.league.name,
+        market: "Match Odds",
+        selection: "Home",
+        odds: Number(odds),
+        model_probability: Number(modelProb.toFixed(2)),
+        implied_probability: Number(impliedProb.toFixed(2)),
+        edge: Number(edge.toFixed(2)),
+        confidence: edge >= 0.10 ? "HIGH" : "MEDIUM",
+        kickoff: f.fixture.date
+      });
+    }
+
+    res.json({ signals });
+
+  } catch (err) {
+    res.status(500).json({ error: "Signal engine unavailable" });
+  }
+});
+
+app.listen(3000, () => console.log("Signal engine running"));
